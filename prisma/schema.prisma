@@ -1,0 +1,133 @@
+// Esquema de datos para el dashboard de afiliados/influencers de Ereboost.
+//
+// Modelo de negocio (definido por Kiko, confirmado el 22-09-2026):
+// - Cada afiliado puede tener VARIOS códigos de descuento de Shopify (ej. uno
+//   de 10% y otro de 5% de descuento al cliente). La comisión del afiliado
+//   es SIEMPRE la misma (commissionPct) sin importar qué código usó el
+//   cliente — lo único que cambia entre códigos es el % de descuento que le
+//   dan al comprador. El portal muestra el desglose de usos/ventas/comisión
+//   por cada código para que el afiliado tenga transparencia total.
+// - El afiliado gana una comisión (normalmente 5%) sobre la "venta neta":
+//     - Si el subtotal del pedido es MENOR al umbral de envío gratis (ej. $49.990):
+//         el cliente paga su propio envío (aparece como item aparte, no se resta)
+//         venta_neta_con_iva = subtotal del pedido
+//     - Si el subtotal del pedido es MAYOR O IGUAL al umbral de envío gratis:
+//         Ereboost paga el envío -> se resta el costo promedio de envío
+//         venta_neta_con_iva = subtotal del pedido - costoPromedioEnvio
+//     - En AMBOS casos, se le quita el IVA antes de calcular la comisión:
+//         venta_neta = venta_neta_con_iva / (1 + ivaPct)
+//         comisión   = venta_neta * comisionPercent
+// - Los pedidos cancelados o completamente reembolsados no cuentan.
+// - Los datos de "veces usado" y "ventas" se calculan en vivo consultando la
+//   Admin API de Shopify (orders con discount_code:CODIGO), no se replican aquí.
+//
+// El mes EN CURSO se calcula siempre en vivo contra Shopify (para que el
+// número de "este mes" sea real y al segundo). Pero como la Admin API de
+// Shopify solo deja consultar pedidos de los últimos 60 días, cada mes que
+// se "cierra" (se paga) queda además congelado en la tabla MonthlySnapshot
+// de esta base de datos — así el histórico de agosto no desaparece cuando
+// ya pasaron 60 días y Shopify deja de mostrarlo.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Producción (Vercel): Postgres (Neon/Supabase/Railway) vía DATABASE_URL.
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Usuario del panel de administración (Kiko / equipo Ereboost).
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+}
+
+// Configuración global del programa de afiliados. Fila única (id fijo "settings").
+model ShopSettings {
+  id                    String   @id @default("settings")
+  // Tienda Shopify (informativo, la fuente de verdad son las env vars).
+  shopDomain            String   @default("ereboost.cl")
+  // Umbral de envío gratis, en CLP. Pedidos con subtotal >= este monto no pagan envío.
+  freeShippingThreshold Int      @default(49990)
+  // Costo promedio de envío que paga Ereboost, en CLP. Se descuenta de la venta
+  // neta cuando el pedido calificó para envío gratis (subtotal >= umbral).
+  avgShippingCost       Int      @default(3000)
+  // % de comisión por defecto para afiliados nuevos (0.05 = 5%).
+  defaultCommissionPct  Float    @default(0.05)
+  // % de IVA (Chile = 0.19) que se descuenta de la venta neta de TODOS los
+  // pedidos (con o sin envío gratis) antes de calcular la comisión.
+  ivaPct                Float    @default(0.19)
+  // Tarifa base fija en CLP que se le paga a cada afiliado a fin de mes,
+  // independiente de sus ventas (se suma a la comisión acumulada del mes).
+  defaultBaseFee        Int      @default(200000)
+  updatedAt             DateTime @updatedAt
+}
+
+// Un afiliado / influencer, que puede tener VARIOS códigos de descuento.
+model Affiliate {
+  id               String   @id @default(cuid())
+  name             String
+  email            String   @unique
+  // Contraseña para que el afiliado entre a su propio dashboard.
+  passwordHash     String
+  // % de comisión para este afiliado (0.05 = 5%). Es SIEMPRE la misma sin
+  // importar cuál de sus códigos usó el cliente. Permite pactar tasas
+  // distintas por influencer si en el futuro negocian condiciones distintas.
+  commissionPct    Float    @default(0.05)
+  // Tarifa base fija en CLP para este afiliado en particular. Si es null, se
+  // usa defaultBaseFee de ShopSettings (normalmente $200.000).
+  baseFee          Int?
+  active           Boolean  @default(true)
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  codes            DiscountCode[]
+  snapshots        MonthlySnapshot[]
+}
+
+// Un código de descuento de Shopify asociado a un afiliado. Un afiliado
+// puede tener varios (ej. uno de 10% de descuento y otro de 5%) — la
+// comisión que gana el afiliado no depende de cuál se use, solo se usa
+// para mostrar el desglose de uso por código.
+model DiscountCode {
+  id           String    @id @default(cuid())
+  affiliateId  String
+  affiliate    Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  // Código EXACTO tal como existe en Shopify (case-insensitive en Shopify,
+  // pero lo guardamos en mayúsculas para comparar de forma consistente).
+  code         String    @unique
+  // % de descuento que este código aplica al cliente (informativo, para
+  // mostrarlo en el dashboard; el descuento real se define en Shopify).
+  discountPct  Float     @default(0.05)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+}
+
+// Un mes ya "cerrado" (y opcionalmente pagado) para un afiliado. Una vez
+// creado, sus números NO cambian aunque Shopify deje de mostrar esos
+// pedidos por la ventana de 60 días — es la "memoria" del portal para que
+// el histórico de meses pasados nunca se pierda.
+model MonthlySnapshot {
+  id              String    @id @default(cuid())
+  affiliateId     String
+  affiliate       Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  year            Int
+  month           Int // 1-12
+  timesUsed       Int
+  totalSubtotal   Float
+  totalNetSale    Float
+  totalCommission Float
+  baseFee         Int
+  totalPago       Float // baseFee + totalCommission, congelado al momento del cierre
+  status          String    @default("cerrado") // "cerrado" | "pagado"
+  ordersJson      String // detalle de pedidos (OrderCommission[]) en JSON, para ver el historial
+  closedAt        DateTime  @default(now())
+  paidAt          DateTime?
+
+  @@unique([affiliateId, year, month])
+}
