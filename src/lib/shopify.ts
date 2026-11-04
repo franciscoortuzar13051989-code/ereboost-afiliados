@@ -153,9 +153,12 @@ export async function getOrdersForDiscountCodes(
 
   const codeGroup =
     "(" + activeCodes.map((c) => `discount_code:${JSON.stringify(c)}`).join(" OR ") + ")";
-  const parts = [codeGroup, `-cancelled_at:*`, `-test:true`];
-  if (opts?.from) parts.push(`created_at:>=${opts.from}`);
-  if (opts?.to) parts.push(`created_at:<${opts.to}`);
+   const parts = [codeGroup, `-cancelled_at:*`, `-test:true`];
+  // Las fechas ahora vienen como ISO completo con hora y huso horario
+  // (ej. "2026-10-01T00:00:00-03:00"), que tiene ":" adentro — hay que
+  // comillarlas o el parser de búsqueda de Shopify corta el filtro ahí.
+  if (opts?.from) parts.push(`created_at:>=${JSON.stringify(opts.from)}`);
+  if (opts?.to) parts.push(`created_at:<${JSON.stringify(opts.to)}`);
   const queryString = parts.join(" AND ");
 
   const upperCodes = activeCodes.map((c) => c.toUpperCase());
