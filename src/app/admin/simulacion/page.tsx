@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { getOrdersForDiscountCodes } from "@/lib/shopify";
 import { calculateCommissions, groupByMonth } from "@/lib/commission";
-import { monthsBetween, monthLabel, type MonthKey } from "@/lib/monthly";
+import { monthsBetween, monthLabel, chileMidnightISO, type MonthKey } from "@/lib/monthly";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +29,14 @@ function addOneDay(dateStr: string): string {
 
 function keyOf(mk: MonthKey) {
   return `${mk.year}-${mk.month}`;
+}
+
+/** Convierte una fecha "YYYY-MM-DD" (de un <input type="date">) al instante
+ * exacto de medianoche en hora de Chile, para que el rango consultado a
+ * Shopify quede anclado al mismo calendario que ve el afiliado. */
+function toChileRangeBound(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return chileMidnightISO(y, m, d);
 }
 
 export default async function SimulationPage({
@@ -66,8 +74,8 @@ export default async function SimulationPage({
 
       try {
         const { orders } = await getOrdersForDiscountCodes(activeCodes, {
-          from: desde,
-          to: addOneDay(hasta),
+          from: toChileRangeBound(desde),
+          to: toChileRangeBound(addOneDay(hasta)),
         });
         const summary = calculateCommissions(orders, a.commissionPct, settings);
         monthly = groupByMonth(summary.orders);
