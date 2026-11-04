@@ -39,10 +39,48 @@ export function parseMonthSlug(slug: string): MonthKey {
   return { year: y, month: m };
 }
 
-/** Rango [from, to) en formato ISO (fecha) para un mes calendario dado. */
+/**
+ * Offset UTC vigente en Chile continental para un instante dado (p.ej.
+ * "-03:00" en horario de verano o "-04:00" en horario de invierno — Chile
+ * cambia de huso horario un par de veces al año). Se usa para anclar los
+ * rangos de fecha que le mandamos a Shopify exactamente a la medianoche de
+ * Chile, en vez de la medianoche UTC (que cae 3-4 horas antes y deja
+ * pedidos de último momento clasificados en el mes equivocado).
+ */
+function chileOffset(d: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Santiago",
+    timeZoneName: "shortOffset",
+  }).formatToParts(d);
+  const tz = parts.find((p) => p.type === "timeZoneName")?.value || "GMT-3";
+  const match = tz.match(/GMT([+-]\d+)/);
+  const hours = match ? parseInt(match[1], 10) : -3;
+  const sign = hours >= 0 ? "+" : "-";
+  return `${sign}${String(Math.abs(hours)).padStart(2, "0")}:00`;
+}
+
+/** ISO del instante exacto de la medianoche de Chile de una fecha dada. */
+export function chileMidnightISO(year: number, month: number, day: number): string {
+  // Mediodía UTC nominal de ese día, solo para preguntarle a Intl qué
+  // offset de Chile aplica en esa fecha (evita cruces de día al calcular).
+  const noonUTC = new Date(Date.UTC(year, month - 1, day, 12));
+  const offset = chileOffset(noonUTC);
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  return `${year}-${mm}-${dd}T00:00:00${offset}`;
+}
+
+/**
+ * Rango [from, to) para un mes calendario dado, anclado a la medianoche de
+ * Chile (no UTC) — así coincide exactamente con el calendario que ve el
+ * afiliado, sin importar cómo interprete Shopify una fecha "suelta" sin
+ * huso horario.
+ */
 export function monthRangeISO(key: MonthKey): { from: string; to: string } {
-  const from = new Date(Date.UTC(key.year, key.month - 1, 1)).toISOString().slice(0, 10);
-  const to = new Date(Date.UTC(key.year, key.month, 1)).toISOString().slice(0, 10);
+  const from = chileMidnightISO(key.year, key.month, 1);
+  const nextMonth = key.month === 12 ? 1 : key.month + 1;
+  const nextYear = key.month === 12 ? key.year + 1 : key.year;
+  const to = chileMidnightISO(nextYear, nextMonth, 1);
   return { from, to };
 }
 
