@@ -74,6 +74,25 @@ export interface MonthBreakdown {
 }
 
 /**
+ * A qué mes calendario pertenece una fecha, según la hora de Chile (no UTC).
+ * Importante: Shopify filtra los pedidos de "Cierre de meses" usando la
+ * zona horaria de la tienda (Chile). Si acá agrupáramos por UTC, un pedido
+ * de las 23:30 del 31 de octubre (hora Chile) cae en las 02:30 del 1 de
+ * noviembre en UTC, y quedaría mal clasificado como de noviembre —
+ * mostrando un total de octubre más bajo del real en las simulaciones.
+ */
+function chileYearMonth(iso: string): { year: number; month: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Santiago",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date(iso));
+  const year = Number(parts.find((p) => p.type === "year")!.value);
+  const month = Number(parts.find((p) => p.type === "month")!.value);
+  return { year, month };
+}
+
+/**
  * Agrupa comisiones ya calculadas por mes calendario (según createdAt),
  * ordenadas cronológicamente. Se usa para simulaciones históricas de rangos
  * de varios meses, donde además de la comisión hay que sumar una tarifa
@@ -82,9 +101,7 @@ export interface MonthBreakdown {
 export function groupByMonth(orders: OrderCommission[]): MonthBreakdown[] {
   const byMonth = new Map<string, MonthBreakdown>();
   for (const o of orders) {
-    const d = new Date(o.createdAt);
-    const year = d.getUTCFullYear();
-    const month = d.getUTCMonth() + 1;
+    const { year, month } = chileYearMonth(o.createdAt);
     const key = `${year}-${month}`;
     const existing = byMonth.get(key);
     if (existing) {
